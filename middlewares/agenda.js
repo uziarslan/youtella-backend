@@ -3,6 +3,7 @@ const OpenAI = require('openai');
 const mongoose = require('mongoose');
 const Summary = mongoose.model('Summary');
 const Caption = mongoose.model('Caption');
+const User = mongoose.model("User");
 const { transcriptPrompt } = require('../utils/prompts');
 const { cloudinary } = require("../cloudinary/index");
 const ffmpeg = require('fluent-ffmpeg');
@@ -260,7 +261,6 @@ agenda.define('transcribeVideo', async (job) => {
   const { language, length, tone } = advancedFeatures;
   console.log(`Starting video transcription job for videoId: ${videoId}`, { language, length, tone });
 
-  let filePath;
   try {
     job.attrs.data.status = 'pending';
     job.attrs.data.progress = 0;
@@ -287,38 +287,20 @@ agenda.define('transcribeVideo', async (job) => {
       job.attrs.data.estimatedTimeRemaining = 100;
       await job.save();
 
-      try {
-        // First try to get captions from YouTube API
-        captions = await fetchVideoCaptions(videoId, getIsoLanguage(language));
-        videoTitle = await getVideoTitle(videoId);
+      // First try to get captions from YouTube API
+      captions = await fetchVideoCaptions(videoId, getIsoLanguage(language));
+      videoTitle = await getVideoTitle(videoId);
 
-        // Save to database for future use
-        const newCaption = new Caption({
-          videoUrl,
-          videoId,
-          videoTitle,
-          rawCaptions: captions
-        });
-        await newCaption.save();
-        console.log('Captions saved to database');
-      } catch (error) {
-        console.log('Falling back to Whisper transcription...');
-        const { stream: mp3Stream, filePath: tempFilePath } = await convertVideoToMp3(videoUrl, true);
-        filePath = tempFilePath;
-        console.log('Uploading MP3 to Cloudinary...');
-        job.attrs.data.progress = 40;
-        job.attrs.data.estimatedTimeRemaining = 80;
-        await job.save();
+      // Save to database for future use
+      const newCaption = new Caption({
+        videoUrl,
+        videoId,
+        videoTitle,
+        rawCaptions: captions
+      });
+      await newCaption.save();
+      console.log('Captions saved to database');
 
-        const audioUrl = await uploadToCloudinary(mp3Stream, `video_${videoId}_audio`);
-        console.log('Transcribing audio...');
-        job.attrs.data.progress = 60;
-        job.attrs.data.estimatedTimeRemaining = 60;
-        await job.save();
-
-        captions = await transcribeAudio(audioUrl, language);
-        videoTitle = await getVideoTitle(videoId);
-      }
     }
 
     console.log('Step 2: Generating title...');
@@ -358,6 +340,11 @@ agenda.define('transcribeVideo', async (job) => {
       keypoints = parsedSummary.keypoints || [];
       timestamps = parsedSummary.timestamps || [];
     } catch (error) {
+      if (userId !== null) {
+        await User.findByIdAndUpdate(userId, {
+          $inc: { summariesUsedToday: -1 },
+        });
+      }
       throw new Error(error)
     }
 
@@ -410,17 +397,16 @@ agenda.define('transcribeVideo', async (job) => {
     }
 
     console.log(`Transcription job completed for videoId: ${videoId}`);
-    if (filePath && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
   } catch (error) {
+    if (userId !== null) {
+      await User.findByIdAndUpdate(userId, {
+        $inc: { summariesUsedToday: -1 },
+      });
+    }
     console.error('Transcription job failed:', error.message);
     job.attrs.data.status = 'failed';
     job.attrs.data.error = error.message;
     await job.save();
-    if (filePath && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
     throw error;
   }
 });

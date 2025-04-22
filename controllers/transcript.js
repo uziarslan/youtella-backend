@@ -16,8 +16,25 @@ const getVideoTranscript = async (req, res) => {
     const { id } = req.user;
 
     const user = await User.findById(id);
+
     if (!user) {
         return res.status(404).json({ error: 'User not found' });
+    }
+
+    const today = new Date().toDateString();
+    const lastSummaryDate = user.lastSummaryDate ? new Date(user.lastSummaryDate).toDateString() : null;
+
+    if (user.subscriptionStatus === "free") {
+        if (lastSummaryDate !== today) {
+            // Reset if it's a new day
+            user.summariesUsedToday = 0;
+            user.lastSummaryDate = new Date();
+            await user.save();
+        } else if (user.summariesUsedToday >= 3) {
+            return res.status(403).json({
+                error: "You’ve used all 3 free summaries for today. You can either: ✅ Wait 24 hours 🚀 Unlock unlimited access for $5.99/month"
+            });
+        }
     }
 
     // Input validation
@@ -30,14 +47,13 @@ const getVideoTranscript = async (req, res) => {
         return res.status(422).json({ error: 'Invalid YouTube URL' });
     }
 
-    // Define advanced features based on subscription status
+    // Advanced features (based on subscription)
     let advancedFeatures = {
         language: 'English',
         length: 'Medium',
         tone: 'Formal'
     };
 
-    // Validate and apply advanced features for subscribed users
     if (user.subscriptionStatus === 'active') {
         if (language && !['English', 'Spanish', 'French', 'German'].includes(language)) {
             return res.status(422).json({ error: 'Invalid language' });
@@ -65,6 +81,16 @@ const getVideoTranscript = async (req, res) => {
             advancedFeatures,
             result: { status: 'pending' }
         });
+
+        await User.findOneAndUpdate(
+            { _id: id },
+            {
+                $inc: { summariesUsedToday: 1 },
+                $set: { lastSummaryDate: Date.now() }
+            },
+            { new: true }
+        );
+
         return res.status(202).json({ taskId });
     } catch (error) {
         console.error('Failed to queue transcription job:', error);
