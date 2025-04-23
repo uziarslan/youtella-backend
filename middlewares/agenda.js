@@ -14,10 +14,6 @@ const ytdl = require('ytdl-core');
 const axios = require("axios");
 const { PassThrough } = require('stream');
 
-// Set FFmpeg path
-const ffmpegPath = require('ffmpeg-static');
-ffmpeg.setFfmpegPath(ffmpegPath);
-
 const openai = new OpenAI({
   apiKey: process.env.GPT_SECRET_KEY
 });
