@@ -59,7 +59,7 @@ function getIsoLanguage(language) {
   return languageMap[normalized] || normalized;
 }
 
-async function convertVideoToMp3(videoSource) {
+async function convertToMp3(videoSource) {
   return new Promise(async (resolve, reject) => {
     try {
       console.log('Starting video to MP3 conversion via Cloudinary...');
@@ -104,6 +104,43 @@ async function convertVideoToMp3(videoSource) {
     } catch (err) {
       console.error('Cloudinary MP3 conversion failed:', err.message);
       reject(new Error(`Cloudinary MP3 conversion failed: ${err.message}`));
+    }
+  });
+}
+
+async function validateAudioUrl(audioSource) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      console.log('Validating audio file...');
+
+      // Expect audio files in /Youtella/audio/ with .mp3 or .wav extension
+      const urlParts = audioSource.match(/\/Youtella\/audio\/(.+)\.(?:mp3|wav)$/i);
+      if (!urlParts) {
+        throw new Error('Invalid Cloudinary audio URL. Expected format: /Youtella/audio/...mp3 or ...wav');
+      }
+      console.log('Audio URL is valid:', audioSource);
+
+      // Verify the audio file exists
+      const audioCheck = await fetch(audioSource);
+      if (!audioCheck.ok) {
+        throw new Error(`Audio file not found: ${audioCheck.statusText}`);
+      }
+      console.log('Audio file is accessible');
+
+      // Return the audio stream
+      const response = await fetch(audioSource);
+      if (!response.ok) {
+        console.error('Fetch response status:', response.status);
+        console.error('Fetch response headers:', Object.fromEntries(response.headers));
+        throw new Error(`Failed to fetch audio: ${response.statusText}`);
+      }
+      const outputStream = response.body;
+
+      console.log('Audio stream retrieved successfully');
+      resolve({ stream: outputStream });
+    } catch (err) {
+      console.error('Audio validation failed:', err.message);
+      reject(new Error(`Audio validation failed: ${err.message}`));
     }
   });
 }
@@ -407,13 +444,26 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
     job.attrs.data.estimatedTimeRemaining = 300;
     await job.save();
 
-    console.log('Step 1: Converting video to MP3...');
+    console.log('Step 1: Processing media file...');
     job.attrs.data.progress = 20;
     job.attrs.data.estimatedTimeRemaining = 250;
     await job.save();
 
-    const { stream: mp3Stream } = await convertVideoToMp3(videoUrl);
-    console.log('MP3 stream generated successfully');
+    let mp3Stream;
+    // Check if the input is a video or audio file
+    if (videoUrl.match(/\.(mov|mp4)$/i)) {
+      console.log('Detected video file, converting to MP3...');
+      const { stream } = await convertToMp3(videoUrl);
+      mp3Stream = stream;
+      console.log('MP3 stream generated from video');
+    } else if (videoUrl.match(/\.(mp3|wav)$/i)) {
+      console.log('Detected audio file, validating...');
+      const { stream } = await validateAudioUrl(videoUrl);
+      mp3Stream = stream;
+      console.log('Audio stream validated');
+    } else {
+      throw new Error('Unsupported file format. Expected .mov, .mp4, .mp3, or .wav');
+    }
 
     console.log('Step 2: Uploading MP3 to Cloudinary...');
     job.attrs.data.progress = 40;
