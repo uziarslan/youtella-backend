@@ -69,21 +69,32 @@ async function convertVideoToMp3(videoSource) {
       if (!urlParts) {
         throw new Error('Invalid Cloudinary video URL. Expected format: /Youtella/videos/...mov or ...mp4');
       }
-      const publicId = `Youtella/videos/${urlParts[1]}`;
+      // Remove file extension from publicId
+      const publicId = `Youtella/videos/${urlParts[1].replace(/\.(mov|mp4)$/i, '')}`;
       console.log('Extracted publicId:', publicId);
 
+      // Verify the original video exists
+      const videoCheck = await fetch(videoSource);
+      if (!videoCheck.ok) {
+        throw new Error(`Original video not found: ${videoCheck.statusText}`);
+      }
+      console.log('Original video is accessible');
+
       // Generate MP3 URL using Cloudinary transformation
-      const audioUrl = cloudinary.url(`${publicId}.mp3`, {
+      const audioUrl = cloudinary.url(`${publicId}`, {
         resource_type: 'video',
         format: 'mp3',
         audio_codec: 'mp3',
         audio_bitrate: '128k',
+        secure: true,
       });
       console.log('Generated Cloudinary MP3 URL:', audioUrl);
 
       // Fetch the MP3 as a stream
       const response = await fetch(audioUrl);
       if (!response.ok) {
+        console.error('Fetch response status:', response.status);
+        console.error('Fetch response headers:', Object.fromEntries(response.headers));
         throw new Error(`Failed to fetch MP3 from Cloudinary: ${response.statusText}`);
       }
       const outputStream = response.body;
@@ -517,5 +528,4 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
     throw error;
   }
 });
-
 module.exports = agenda;
