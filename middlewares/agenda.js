@@ -85,21 +85,31 @@ async function convertVideoToMp3(videoSource, isYouTubeUrl = false) {
         ffmpegCommand = ffmpeg(videoSource);
       }
 
-      const outputStream = new PassThrough(); // In-memory stream
+      const outputStream = new PassThrough();
 
       ffmpegCommand
         .outputFormat('mp3')
         .noVideo()
         .audioBitrate('128k')
+        .outputOptions('-threads 1')
+        .outputOptions('-preset ultrafast')
+        .on('start', (commandLine) => {
+          console.log('FFmpeg command:', commandLine);
+        })
+        .on('progress', (progress) => {
+          console.log('FFmpeg progress:', progress);
+        })
         .on('end', () => {
           console.log('MP3 conversion completed');
           resolve({ stream: outputStream });
         })
-        .on('error', (err) => {
-          console.error('MP3 conversion failed:', err.message);
+        .on('error', (err, stdout, stderr) => {
+          console.error('FFmpeg error:', err.message);
+          console.error('FFmpeg stdout:', stdout);
+          console.error('FFmpeg stderr:', stderr);
           reject(new Error(`MP3 conversion failed: ${err.message}`));
         })
-        .pipe(outputStream, { end: true }); // Pipe FFmpeg output to PassThrough stream
+        .pipe(outputStream, { end: true });
     } catch (err) {
       console.error('FFmpeg initialization failed:', err.message);
       reject(new Error(`FFmpeg initialization failed: ${err.message}`));
