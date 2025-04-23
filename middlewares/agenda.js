@@ -111,12 +111,12 @@ async function convertToMp3(videoSource) {
 async function validateAudioUrl(audioSource) {
   return new Promise(async (resolve, reject) => {
     try {
-      console.log('Validating audio file...');
+      console.log('Validating audio file:', audioSource);
 
-      // Expect audio files in /Youtella/audio/ with .mp3 or .wav extension
-      const urlParts = audioSource.match(/\/Youtella\/audio\/(.+)\.(?:mp3|wav)$/i);
+      // Support audio files in /Youtella/videos/ or /Youtella/audio/ with .mp3, .wav, .m4a extensions
+      const urlParts = audioSource.match(/\/Youtella\/(?:videos|audio)\/(.+)\.(?:mp3|wav|m4a)$/i);
       if (!urlParts) {
-        throw new Error('Invalid Cloudinary audio URL. Expected format: /Youtella/audio/...mp3 or ...wav');
+        throw new Error('Invalid Cloudinary audio URL. Expected format: /Youtella/(videos|audio)/...mp3, ...wav, or ...m4a');
       }
       console.log('Audio URL is valid:', audioSource);
 
@@ -437,6 +437,7 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
   const { videoUrl, publicId, taskId, userId, advancedFeatures } = job.attrs.data;
   const { language, length, tone } = advancedFeatures;
   console.log(`Starting uploaded video transcription job for taskId: ${taskId}`, { advancedFeatures });
+  console.log(`Input URL: ${videoUrl}`);
 
   try {
     job.attrs.data.status = 'pending';
@@ -456,13 +457,13 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
       const { stream } = await convertToMp3(videoUrl);
       mp3Stream = stream;
       console.log('MP3 stream generated from video');
-    } else if (videoUrl.match(/\.(mp3|wav)$/i)) {
+    } else if (videoUrl.match(/\.(mp3|wav|m4a)$/i)) {
       console.log('Detected audio file, validating...');
       const { stream } = await validateAudioUrl(videoUrl);
       mp3Stream = stream;
       console.log('Audio stream validated');
     } else {
-      throw new Error('Unsupported file format. Expected .mov, .mp4, .mp3, or .wav');
+      throw new Error('Unsupported file format. Expected .mov, .mp4, .mp3, .wav, or .m4a');
     }
 
     console.log('Step 2: Uploading MP3 to Cloudinary...');
