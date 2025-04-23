@@ -528,4 +528,5 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
     throw error;
   }
 });
+
 module.exports = agenda;
