@@ -6,13 +6,8 @@ const Caption = mongoose.model('Caption');
 const User = mongoose.model("User");
 const { transcriptPrompt } = require('../utils/prompts');
 const { cloudinary } = require("../cloudinary/index");
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const path = require('path');
 const fetch = require('node-fetch');
-const ytdl = require('ytdl-core');
 const axios = require("axios");
-const { PassThrough } = require('stream');
 
 const openai = new OpenAI({
   apiKey: process.env.GPT_SECRET_KEY
@@ -64,51 +59,40 @@ function getIsoLanguage(language) {
   return languageMap[normalized] || normalized;
 }
 
-
-async function convertVideoToMp3(videoSource, isYouTubeUrl = false) {
-  return new Promise((resolve, reject) => {
+async function convertVideoToMp3(videoSource) {
+  return new Promise(async (resolve, reject) => {
     try {
-      console.log('Starting video to MP3 conversion...');
-      let ffmpegCommand = ffmpeg();
+      console.log('Starting video to MP3 conversion via Cloudinary...');
 
-      if (isYouTubeUrl) {
-        const stream = ytdl(videoSource, {
-          filter: 'audioonly',
-          quality: 'highestaudio',
-        });
-        ffmpegCommand = ffmpeg(stream);
-      } else {
-        ffmpegCommand = ffmpeg(videoSource);
+      // Extract publicId from Cloudinary videoSource URL
+      const urlParts = videoSource.match(/\/Youtella\/videos\/(.+)\.(?:mov|mp4)$/i);
+      if (!urlParts) {
+        throw new Error('Invalid Cloudinary video URL. Expected format: /Youtella/videos/...mov or ...mp4');
       }
+      const publicId = `Youtella/videos/${urlParts[1]}`;
+      console.log('Extracted publicId:', publicId);
 
-      const outputStream = new PassThrough();
+      // Generate MP3 URL using Cloudinary transformation
+      const audioUrl = cloudinary.url(`${publicId}.mp3`, {
+        resource_type: 'video',
+        format: 'mp3',
+        audio_codec: 'mp3',
+        audio_bitrate: '128k',
+      });
+      console.log('Generated Cloudinary MP3 URL:', audioUrl);
 
-      ffmpegCommand
-        .outputFormat('mp3')
-        .noVideo()
-        .audioBitrate('128k')
-        .outputOptions('-threads 1')
-        .outputOptions('-preset ultrafast')
-        .on('start', (commandLine) => {
-          console.log('FFmpeg command:', commandLine);
-        })
-        .on('progress', (progress) => {
-          console.log('FFmpeg progress:', progress);
-        })
-        .on('end', () => {
-          console.log('MP3 conversion completed');
-          resolve({ stream: outputStream });
-        })
-        .on('error', (err, stdout, stderr) => {
-          console.error('FFmpeg error:', err.message);
-          console.error('FFmpeg stdout:', stdout);
-          console.error('FFmpeg stderr:', stderr);
-          reject(new Error(`MP3 conversion failed: ${err.message}`));
-        })
-        .pipe(outputStream, { end: true });
+      // Fetch the MP3 as a stream
+      const response = await fetch(audioUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch MP3 from Cloudinary: ${response.statusText}`);
+      }
+      const outputStream = response.body;
+
+      console.log('MP3 stream generated via Cloudinary');
+      resolve({ stream: outputStream });
     } catch (err) {
-      console.error('FFmpeg initialization failed:', err.message);
-      reject(new Error(`FFmpeg initialization failed: ${err.message}`));
+      console.error('Cloudinary MP3 conversion failed:', err.message);
+      reject(new Error(`Cloudinary MP3 conversion failed: ${err.message}`));
     }
   });
 }
@@ -200,9 +184,7 @@ async function generateTitle(captions, language = 'english') {
 
 async function deleteFromCloudinary(publicId) {
   try {
-    // Remove the folder prefix if it exists
     const baseId = publicId.replace(/^Youtella\//, '');
-
     await Promise.all([
       cloudinary.uploader.destroy(`Youtella/${baseId}`, { resource_type: 'video' }),
       cloudinary.uploader.destroy(`Youtella/audio/${baseId}_audio`, { resource_type: 'video' })
@@ -227,11 +209,9 @@ async function fetchVideoCaptions(videoId, language = 'en') {
     };
 
     const response = await axios.request(options);
-
     if (response.status !== 200) {
       throw new Error(`Failed to fetch captions: ${response.statusText}`);
     }
-
     const captions = await response.data;
     return captions;
   } catch (error) {
@@ -255,7 +235,7 @@ async function getVideoTitle(videoId) {
 
     const response = await axios.request(options);
     if (response.status !== 200) {
-      throw new Error("Failed to fetch title", response.statusText)
+      throw new Error("Failed to fetch title", response.statusText);
     }
     return response.data.title;
   } catch (error) {
@@ -283,7 +263,6 @@ agenda.define('transcribeVideo', async (job) => {
     let captions;
     let videoTitle;
 
-    // Check if we have cached captions
     const existingCaption = await Caption.findOne({ videoId });
     if (existingCaption) {
       console.log('Using cached captions');
@@ -295,11 +274,9 @@ agenda.define('transcribeVideo', async (job) => {
       job.attrs.data.estimatedTimeRemaining = 100;
       await job.save();
 
-      // First try to get captions from YouTube API
       captions = await fetchVideoCaptions(videoId, getIsoLanguage(language));
       videoTitle = await getVideoTitle(videoId);
 
-      // Save to database for future use
       const newCaption = new Caption({
         videoUrl,
         videoId,
@@ -308,7 +285,6 @@ agenda.define('transcribeVideo', async (job) => {
       });
       await newCaption.save();
       console.log('Captions saved to database');
-
     }
 
     console.log('Step 2: Generating title...');
@@ -327,33 +303,25 @@ agenda.define('transcribeVideo', async (job) => {
     const summary = await openai.chat.completions.create({
       model: 'gpt-4o',
       messages: [
-        {
-          role: 'system',
-          content: prompt
-        },
-        {
-          role: 'user',
-          content: captions
-        }
+        { role: 'system', content: prompt },
+        { role: 'user', content: captions }
       ],
       max_tokens: 14000
     });
 
     let summaryText, keypoints, timestamps;
     try {
-      console.log(summary.choices[0].message.content)
+      console.log(summary.choices[0].message.content);
       const parsedSummary = JSON.parse(summary.choices[0].message.content);
-      console.log(parsedSummary)
+      console.log(parsedSummary);
       summaryText = parsedSummary.summary || summary.choices[0].message.content.trim();
       keypoints = parsedSummary.keypoints || [];
       timestamps = parsedSummary.timestamps || [];
     } catch (error) {
       if (userId !== null) {
-        await User.findByIdAndUpdate(userId, {
-          $inc: { summariesUsedToday: -1 },
-        });
+        await User.findByIdAndUpdate(userId, { $inc: { summariesUsedToday: -1 } });
       }
-      throw new Error(error)
+      throw new Error(error);
     }
 
     console.log('Summary generated:', { summaryText, keypoints, timestamps });
@@ -407,9 +375,7 @@ agenda.define('transcribeVideo', async (job) => {
     console.log(`Transcription job completed for videoId: ${videoId}`);
   } catch (error) {
     if (userId !== null) {
-      await User.findByIdAndUpdate(userId, {
-        $inc: { summariesUsedToday: -1 },
-      });
+      await User.findByIdAndUpdate(userId, { $inc: { summariesUsedToday: -1 } });
     }
     console.error('Transcription job failed:', error.message);
     job.attrs.data.status = 'failed';
@@ -435,7 +401,7 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
     job.attrs.data.estimatedTimeRemaining = 250;
     await job.save();
 
-    const { stream: mp3Stream } = await convertVideoToMp3(videoUrl); // No filePath
+    const { stream: mp3Stream } = await convertVideoToMp3(videoUrl);
     console.log('MP3 stream generated successfully');
 
     console.log('Step 2: Uploading MP3 to Cloudinary...');
@@ -476,9 +442,9 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
       model: 'gpt-4o',
       messages: [
         { role: 'system', content: prompt },
-        { role: 'user', content: rawCaptions },
+        { role: 'user', content: rawCaptions }
       ],
-      max_tokens: 14000,
+      max_tokens: 14000
     });
 
     let summaryText, keypoints, timestamps;
@@ -501,7 +467,7 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
       timestamps,
       language,
       summaryLength: lengthMap[length] || 'medium',
-      summaryTone: toneMap[tone] || 'formal',
+      summaryTone: toneMap[tone] || 'formal'
     };
 
     job.attrs.data.progress = 100;
@@ -509,7 +475,7 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
     job.attrs.data.status = 'completed';
     job.attrs.data.result = {
       status: 'completed',
-      summary: JSON.stringify(summaryObj),
+      summary: JSON.stringify(summaryObj)
     };
     await job.save();
 
@@ -524,7 +490,7 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
         timestamps,
         language: language.toLowerCase(),
         summaryTone: toneMap[tone] || 'formal',
-        summaryLength: lengthMap[length] || 'medium',
+        summaryLength: lengthMap[length] || 'medium'
       });
       console.log('Saving Summary document:', {
         userId,
@@ -536,14 +502,12 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
         timestamps,
         language: language.toLowerCase(),
         summaryTone: toneMap[tone] || 'formal',
-        summaryLength: lengthMap[length] || 'medium',
+        summaryLength: lengthMap[length] || 'medium'
       });
       await newSummary.save();
     }
 
-    // Delete video and audio from Cloudinary after successful transcription
     await deleteFromCloudinary(`Youtella/${sanitizedPublicId}`);
-
     console.log(`Uploaded video transcription job completed for taskId: ${taskId}`);
   } catch (error) {
     console.error('Uploaded video transcription job failed:', error.message);
