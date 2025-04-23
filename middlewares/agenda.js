@@ -11,7 +11,8 @@ const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch');
 const ytdl = require('ytdl-core');
-const axios = require("axios")
+const axios = require("axios");
+const { PassThrough } = require('stream');
 
 // Set FFmpeg path
 const ffmpegPath = require('ffmpeg-static');
@@ -67,9 +68,9 @@ function getIsoLanguage(language) {
   return languageMap[normalized] || normalized;
 }
 
+
 async function convertVideoToMp3(videoSource, isYouTubeUrl = false) {
   return new Promise((resolve, reject) => {
-    const outputPath = path.join(__dirname, `temp_mp3_${Date.now()}.mp3`);
     try {
       console.log('Starting video to MP3 conversion...');
       let ffmpegCommand = ffmpeg();
@@ -77,12 +78,14 @@ async function convertVideoToMp3(videoSource, isYouTubeUrl = false) {
       if (isYouTubeUrl) {
         const stream = ytdl(videoSource, {
           filter: 'audioonly',
-          quality: 'highestaudio'
+          quality: 'highestaudio',
         });
         ffmpegCommand = ffmpeg(stream);
       } else {
         ffmpegCommand = ffmpeg(videoSource);
       }
+
+      const outputStream = new PassThrough(); // In-memory stream
 
       ffmpegCommand
         .outputFormat('mp3')
@@ -90,14 +93,13 @@ async function convertVideoToMp3(videoSource, isYouTubeUrl = false) {
         .audioBitrate('128k')
         .on('end', () => {
           console.log('MP3 conversion completed');
-          const outputStream = fs.createReadStream(outputPath);
-          resolve({ stream: outputStream, filePath: outputPath });
+          resolve({ stream: outputStream });
         })
         .on('error', (err) => {
           console.error('MP3 conversion failed:', err.message);
           reject(new Error(`MP3 conversion failed: ${err.message}`));
         })
-        .save(outputPath);
+        .pipe(outputStream, { end: true }); // Pipe FFmpeg output to PassThrough stream
     } catch (err) {
       console.error('FFmpeg initialization failed:', err.message);
       reject(new Error(`FFmpeg initialization failed: ${err.message}`));
@@ -416,7 +418,6 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
   const { language, length, tone } = advancedFeatures;
   console.log(`Starting uploaded video transcription job for taskId: ${taskId}`, { advancedFeatures });
 
-  let filePath;
   try {
     job.attrs.data.status = 'pending';
     job.attrs.data.progress = 0;
@@ -428,8 +429,7 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
     job.attrs.data.estimatedTimeRemaining = 250;
     await job.save();
 
-    const { stream: mp3Stream, filePath: tempFilePath } = await convertVideoToMp3(videoUrl);
-    filePath = tempFilePath;
+    const { stream: mp3Stream } = await convertVideoToMp3(videoUrl); // No filePath
     console.log('MP3 stream generated successfully');
 
     console.log('Step 2: Uploading MP3 to Cloudinary...');
@@ -469,28 +469,22 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
     const summary = await openai.chat.completions.create({
       model: 'gpt-4o',
       messages: [
-        {
-          role: 'system',
-          content: prompt
-        },
-        {
-          role: 'user',
-          content: rawCaptions
-        }
+        { role: 'system', content: prompt },
+        { role: 'user', content: rawCaptions },
       ],
-      max_tokens: 14000
+      max_tokens: 14000,
     });
 
     let summaryText, keypoints, timestamps;
     try {
-      console.log(summary.choices[0].message.content)
+      console.log(summary.choices[0].message.content);
       const parsedSummary = JSON.parse(summary.choices[0].message.content);
-      console.log(parsedSummary)
+      console.log(parsedSummary);
       summaryText = parsedSummary.summary || summary.choices[0].message.content.trim();
       keypoints = parsedSummary.keypoints || [];
       timestamps = parsedSummary.timestamps || [];
     } catch (error) {
-      throw new Error(error)
+      throw new Error(error);
     }
 
     console.log('Summary generated:', { summaryText, keypoints, timestamps });
@@ -501,7 +495,7 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
       timestamps,
       language,
       summaryLength: lengthMap[length] || 'medium',
-      summaryTone: toneMap[tone] || 'formal'
+      summaryTone: toneMap[tone] || 'formal',
     };
 
     job.attrs.data.progress = 100;
@@ -509,7 +503,7 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
     job.attrs.data.status = 'completed';
     job.attrs.data.result = {
       status: 'completed',
-      summary: JSON.stringify(summaryObj)
+      summary: JSON.stringify(summaryObj),
     };
     await job.save();
 
@@ -524,7 +518,7 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
         timestamps,
         language: language.toLowerCase(),
         summaryTone: toneMap[tone] || 'formal',
-        summaryLength: lengthMap[length] || 'medium'
+        summaryLength: lengthMap[length] || 'medium',
       });
       console.log('Saving Summary document:', {
         userId,
@@ -536,7 +530,7 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
         timestamps,
         language: language.toLowerCase(),
         summaryTone: toneMap[tone] || 'formal',
-        summaryLength: lengthMap[length] || 'medium'
+        summaryLength: lengthMap[length] || 'medium',
       });
       await newSummary.save();
     }
@@ -545,17 +539,11 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
     await deleteFromCloudinary(`Youtella/${sanitizedPublicId}`);
 
     console.log(`Uploaded video transcription job completed for taskId: ${taskId}`);
-    if (filePath && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
   } catch (error) {
     console.error('Uploaded video transcription job failed:', error.message);
     job.attrs.data.status = 'failed';
     job.attrs.data.error = error.message;
     await job.save();
-    if (filePath && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
     throw error;
   }
 });
