@@ -2,6 +2,7 @@ const { json } = require('body-parser');
 const agenda = require('../middlewares/agenda');
 const mongoose = require('mongoose');
 const User = mongoose.model('User');
+const Summary = mongoose.model('Summary');
 
 // Extract video ID from URL
 const getVideoId = (url) => {
@@ -256,4 +257,26 @@ const getTranscriptStatus = async (req, res) => {
     }
 };
 
-module.exports = { getVideoTranscript, getFreeVideoTranscript, uploadVideo, getTranscriptStatus };
+const getSharedSummary = async (req, res) => {
+    const { sharename } = req.body;
+
+    if (!sharename) {
+        return res.status(400).json({ error: "Invalid request." })
+    }
+
+    const shareableLink = `${process.env.DOMAIN_FRONTEND}/share/${sharename}`
+
+    const summary = await Summary.findOne({
+        shareableLink
+    });
+
+    if (!summary) {
+        return res.status(404).json({ error: "Unable to fetch summary." });
+    }
+
+    res.status(200).json({
+        summary
+    })
+}
+
+module.exports = { getVideoTranscript, getFreeVideoTranscript, uploadVideo, getTranscriptStatus, getSharedSummary };

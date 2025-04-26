@@ -27,7 +27,8 @@ const getSummaryById = async (req, res) => {
             timestamps: summary.timestamps,
             language: summary.language, // Add language
             summaryLength: summary.summaryLength, // Add summaryLength
-            summaryTone: summary.summaryTone // Add summaryTone
+            summaryTone: summary.summaryTone, // Add summaryTone
+            shareableLink: summary.shareableLink
         });
     } catch (error) {
         console.error('Error fetching summary:', error);

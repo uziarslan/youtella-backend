@@ -292,6 +292,38 @@ async function getVideoTitle(videoId) {
   }
 }
 
+async function generateShareableLinkName(videoTitle, language = "english") {
+  console.log("Geneating name for shareable link.")
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: `Generate 2 word name for the shareable link based on the provided video title in ${language.toLowerCase()}.`
+        },
+        {
+          role: 'user',
+          content: `Generate a 2 word name for a shareable link based on this title, make sure to add a seprator in beetween those words "-", also make sure the name is unique:\n\n${videoTitle.substring(0, 1000)}`
+        }
+      ],
+      max_tokens: 50
+    });
+    const name = stripQuotes(completion.choices[0].message.content.trim());
+    console.log(`Generated Name: ${name}`);
+    return name;
+  } catch (error) {
+    console.error('Name generation failed:', error.message);
+    return 'Untitled Video';
+  }
+}
+
+async function incrementShareableName(videoId, shareableName) {
+  const captions = await Caption.find({ videoId, shareableName });
+  const length = captions.length;
+  return `${shareableName}-${length + 1}`
+}
+
 agenda.define('transcribeVideo', async (job) => {
   const { videoId, userId, advancedFeatures } = job.attrs.data;
   const { language, length, tone } = advancedFeatures;
@@ -310,12 +342,17 @@ agenda.define('transcribeVideo', async (job) => {
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     let captions;
     let videoTitle;
+    let shareableName;
 
     const existingCaption = await Caption.findOne({ videoId });
     if (existingCaption) {
       console.log('Using cached captions');
       captions = existingCaption.rawCaptions;
       videoTitle = existingCaption.videoTitle;
+
+      console.log("Checking for the shareable names");
+
+      shareableName = await incrementShareableName(videoId, existingCaption.shareableName)
     } else {
       console.log('No cached captions found, fetching from API...');
       job.attrs.data.progress = 20;
@@ -324,12 +361,14 @@ agenda.define('transcribeVideo', async (job) => {
 
       captions = await fetchVideoCaptions(videoId, getIsoLanguage(language));
       videoTitle = await getVideoTitle(videoId);
+      shareableName = await generateShareableLinkName(videoTitle, getIsoLanguage(language))
 
       const newCaption = new Caption({
         videoUrl,
         videoId,
         videoTitle,
-        rawCaptions: captions
+        rawCaptions: captions,
+        shareableName
       });
       await newCaption.save();
       console.log('Captions saved to database');
@@ -374,13 +413,18 @@ agenda.define('transcribeVideo', async (job) => {
 
     console.log('Summary generated:', { summaryText, keypoints, timestamps });
 
+    console.log("Creating the shareable link..")
+
+    const shareableLink = `${process.env.DOMAIN_FRONTEND}/share/${shareableName}`
+
     const summaryObj = {
       keypoints,
       summary: summaryText,
       timestamps,
       language,
       summaryLength: lengthMap[length] || 'medium',
-      summaryTone: toneMap[tone] || 'formal'
+      summaryTone: toneMap[tone] || 'formal',
+      shareableLink
     };
 
     job.attrs.data.progress = 100;
@@ -403,7 +447,8 @@ agenda.define('transcribeVideo', async (job) => {
         timestamps,
         language: language.toLowerCase(),
         summaryTone: toneMap[tone] || 'formal',
-        summaryLength: lengthMap[length] || 'medium'
+        summaryLength: lengthMap[length] || 'medium',
+        shareableLink
       });
       console.log('Saving Summary document:', {
         userId,
@@ -494,6 +539,28 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
 
     const summaryTitle = await generateTitle(rawCaptions, language);
 
+    let shareableName = await generateShareableLinkName(summaryTitle, language);
+
+    let founded = true;
+    let maxRetries = 10;
+    let retries = 0;
+    while (founded && retries < maxRetries) {
+      console.log("Checking for the names which already existed.");
+      const link = `${process.env.DOMAIN_FRONTEND}/share/${shareableName}`
+      const summaries = await Summary.find({ shareableLink: link });
+
+      if (!summaries.length) {
+        founded = false;
+        break
+      }
+      shareableName = await generateShareableLinkName(summaryTitle, language);
+
+      retries++;
+      if (retries >= maxRetries) {
+        throw new Error("Unable to generate a unique shareable link after maximum retries");
+      }
+    }
+
     console.log('Step 5: Generating summary...');
     job.attrs.data.progress = 90;
     job.attrs.data.estimatedTimeRemaining = 50;
@@ -522,6 +589,10 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
     }
 
     console.log('Summary generated:', { summaryText, keypoints, timestamps });
+
+    console.log("Generating the shareable link");
+
+    const shareableLink = `${process.env.DOMAIN_FRONTEND}/share/${shareableName}`
 
     const summaryObj = {
       keypoints,
@@ -552,7 +623,8 @@ agenda.define('transcribeUploadedVideo', { lockLifetime: 300000 }, async (job) =
         timestamps,
         language: language.toLowerCase(),
         summaryTone: toneMap[tone] || 'formal',
-        summaryLength: lengthMap[length] || 'medium'
+        summaryLength: lengthMap[length] || 'medium',
+        shareableLink
       });
       console.log('Saving Summary document:', {
         userId,

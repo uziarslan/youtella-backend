@@ -46,17 +46,9 @@ const SummarySchema = new mongoose.Schema({
         type: String,
         default: 'english'
     },
-    downloadablePDFUrl: {
+    shareableLink: {
         type: String
     },
-    hasChapters: {
-        type: Boolean,
-        default: false
-    },
-    enrichedContent: {
-        type: Boolean,
-        default: false
-    }
 }, { timestamps: true });
 
 SummarySchema.index({ userId: 1, createdAt: -1 });

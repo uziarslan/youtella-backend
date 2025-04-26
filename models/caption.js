@@ -22,6 +22,10 @@ const CaptionSchema = new mongoose.Schema({
     createdAt: {
         type: Date,
         default: Date.now,
+    },
+    shareableName: {
+        type: String,
+        require: true
     }
 });
 
