@@ -63,7 +63,7 @@ app.use("/api/stripe", stripeWebhook);
 // Use JSON parser for all other routes
 app.use(bodyParser.json());
 
-// Define other routes after JSON parsing
+// Define other routes after JSON parsing 
 app.use("/api/auth", authRoutes);
 app.use("/api/stripe", stripeRoutes);
 app.use("/api", transcriptRoutes);
