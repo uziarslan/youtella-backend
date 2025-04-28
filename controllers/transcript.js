@@ -274,8 +274,10 @@ const getSharedSummary = async (req, res) => {
         return res.status(404).json({ error: "Unable to fetch summary." });
     }
 
+    console.log(summary)
+
     res.status(200).json({
-        summary
+        ...summary._doc
     })
 }
 

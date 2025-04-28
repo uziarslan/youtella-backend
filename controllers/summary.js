@@ -22,13 +22,7 @@ const getSummaryById = async (req, res) => {
             return res.status(404).json({ error: 'Summary not found' });
         }
         res.status(200).json({
-            keypoints: summary.keypoints,
-            summary: summary.summaryText,
-            timestamps: summary.timestamps,
-            language: summary.language, // Add language
-            summaryLength: summary.summaryLength, // Add summaryLength
-            summaryTone: summary.summaryTone, // Add summaryTone
-            shareableLink: summary.shareableLink
+            ...summary._doc,
         });
     } catch (error) {
         console.error('Error fetching summary:', error);

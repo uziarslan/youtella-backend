@@ -26,6 +26,17 @@ const CaptionSchema = new mongoose.Schema({
     shareableName: {
         type: String,
         require: true
+    },
+    thumbnailUrl: {
+        type: String,
+    },
+    videoTimestamp: {
+        type: String,
+    },
+    generated: {
+        type: Number,
+        required: true,
+        default: 1
     }
 });
 
