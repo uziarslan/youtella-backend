@@ -5,7 +5,6 @@ const SummarySchema = new mongoose.Schema({
     userId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
-        required: true
     },
     videoUrl: {
         type: String,
@@ -49,6 +48,12 @@ const SummarySchema = new mongoose.Schema({
     shareableLink: {
         type: String
     },
+    thumbnailUrl: {
+        type: String
+    },
+    videoTimestamp: {
+        type: String
+    }
 }, { timestamps: true });
 
 SummarySchema.index({ userId: 1, createdAt: -1 });

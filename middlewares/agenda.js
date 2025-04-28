@@ -49,6 +49,15 @@ const lengthMap = {
   'Long': 'long'
 };
 
+function formatSecondsToMinutes(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+
+  const formattedSeconds = String(remainingSeconds).padStart(2, '0');
+
+  return `${minutes}:${formattedSeconds}`;
+}
+
 // Utility functions
 function stripQuotes(str) {
   return str.replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1');
@@ -285,7 +294,12 @@ async function getVideoTitle(videoId) {
     if (response.status !== 200) {
       throw new Error("Failed to fetch title", response.statusText);
     }
-    return response.data.title;
+    // response.data.title
+    return {
+      title: response.data.title,
+      thumbnail: response.data.thumbnail[0].url,
+      lengthSeconds: response.data.lengthSeconds,
+    }
   } catch (error) {
     console.error('Error fetching video title:', error.message);
     return 'Untitled Video';
@@ -319,9 +333,12 @@ async function generateShareableLinkName(videoTitle, language = "english") {
 }
 
 async function incrementShareableName(videoId, shareableName) {
-  const captions = await Caption.find({ videoId, shareableName });
-  const length = captions.length;
-  return `${shareableName}-${length + 1}`
+  const captions = await Caption.findOneAndUpdate(
+    { videoId },
+    { $inc: { generated: 1 } },
+    { new: true }
+  );
+  return `${shareableName}-${captions.generated}`
 }
 
 agenda.define('transcribeVideo', async (job) => {
@@ -342,13 +359,17 @@ agenda.define('transcribeVideo', async (job) => {
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     let captions;
     let videoTitle;
-    let shareableName;
+    let shareableName
+    let thumbnailUrl
+    let videoTimestamp
 
     const existingCaption = await Caption.findOne({ videoId });
     if (existingCaption) {
       console.log('Using cached captions');
       captions = existingCaption.rawCaptions;
       videoTitle = existingCaption.videoTitle;
+      thumbnailUrl = existingCaption.thumbnailUrl;
+      videoTimestamp = existingCaption.videoTimestamp;
 
       console.log("Checking for the shareable names");
 
@@ -360,7 +381,10 @@ agenda.define('transcribeVideo', async (job) => {
       await job.save();
 
       captions = await fetchVideoCaptions(videoId, getIsoLanguage(language));
-      videoTitle = await getVideoTitle(videoId);
+      const { title, thumbnail, lengthSeconds } = await getVideoTitle(videoId);
+      videoTitle = title || 'Untitled Video';
+      thumbnailUrl = thumbnail || '';
+      videoTimestamp = formatSecondsToMinutes(lengthSeconds) || null;
       shareableName = await generateShareableLinkName(videoTitle, getIsoLanguage(language))
 
       const newCaption = new Caption({
@@ -368,7 +392,9 @@ agenda.define('transcribeVideo', async (job) => {
         videoId,
         videoTitle,
         rawCaptions: captions,
-        shareableName
+        shareableName,
+        videoTimestamp,
+        thumbnailUrl,
       });
       await newCaption.save();
       console.log('Captions saved to database');
@@ -419,12 +445,15 @@ agenda.define('transcribeVideo', async (job) => {
 
     const summaryObj = {
       keypoints,
-      summary: summaryText,
+      summaryText,
       timestamps,
       language,
       summaryLength: lengthMap[length] || 'medium',
       summaryTone: toneMap[tone] || 'formal',
-      shareableLink
+      shareableLink,
+      thumbnailUrl,
+      videoTimestamp,
+      summaryTitle
     };
 
     job.attrs.data.progress = 100;
@@ -436,34 +465,34 @@ agenda.define('transcribeVideo', async (job) => {
     };
     await job.save();
 
-    if (userId) {
-      const newSummary = new Summary({
-        userId,
-        videoUrl,
-        platform: 'youtube',
-        summaryTitle,
-        summaryText,
-        keypoints,
-        timestamps,
-        language: language.toLowerCase(),
-        summaryTone: toneMap[tone] || 'formal',
-        summaryLength: lengthMap[length] || 'medium',
-        shareableLink
-      });
-      console.log('Saving Summary document:', {
-        userId,
-        videoUrl,
-        platform: 'youtube',
-        summaryTitle,
-        summaryText: summaryText.substring(0, 100),
-        keypoints,
-        timestamps,
-        language: language.toLowerCase(),
-        summaryTone: toneMap[tone] || 'formal',
-        summaryLength: lengthMap[length] || 'medium'
-      });
-      await newSummary.save();
-    }
+    const newSummary = new Summary({
+      userId,
+      videoUrl,
+      platform: 'youtube',
+      summaryTitle,
+      summaryText,
+      keypoints,
+      timestamps,
+      language: language.toLowerCase(),
+      summaryTone: toneMap[tone] || 'formal',
+      summaryLength: lengthMap[length] || 'medium',
+      shareableLink,
+      thumbnailUrl,
+      videoTimestamp
+    });
+    console.log('Saving Summary document:', {
+      userId,
+      videoUrl,
+      platform: 'youtube',
+      summaryTitle,
+      summaryText: summaryText.substring(0, 100),
+      keypoints,
+      timestamps,
+      language: language.toLowerCase(),
+      summaryTone: toneMap[tone] || 'formal',
+      summaryLength: lengthMap[length] || 'medium'
+    });
+    await newSummary.save();
 
     console.log(`Transcription job completed for videoId: ${videoId}`);
   } catch (error) {
