@@ -443,28 +443,6 @@ agenda.define('transcribeVideo', async (job) => {
 
     const shareableLink = `${process.env.DOMAIN_FRONTEND}/share/${shareableName}`
 
-    const summaryObj = {
-      keypoints,
-      summaryText,
-      timestamps,
-      language,
-      summaryLength: lengthMap[length] || 'medium',
-      summaryTone: toneMap[tone] || 'formal',
-      shareableLink,
-      thumbnailUrl,
-      videoTimestamp,
-      summaryTitle
-    };
-
-    job.attrs.data.progress = 100;
-    job.attrs.data.estimatedTimeRemaining = 0;
-    job.attrs.data.status = 'completed';
-    job.attrs.data.result = {
-      status: 'completed',
-      summary: JSON.stringify(summaryObj)
-    };
-    await job.save();
-
     const newSummary = new Summary({
       userId,
       videoUrl,
@@ -493,6 +471,29 @@ agenda.define('transcribeVideo', async (job) => {
       summaryLength: lengthMap[length] || 'medium'
     });
     await newSummary.save();
+
+    const summaryObj = {
+      keypoints,
+      summaryText,
+      timestamps,
+      language,
+      summaryLength: lengthMap[length] || 'medium',
+      summaryTone: toneMap[tone] || 'formal',
+      shareableLink,
+      thumbnailUrl,
+      videoTimestamp,
+      summaryTitle,
+      _id: newSummary._id,
+    };
+
+    job.attrs.data.progress = 100;
+    job.attrs.data.estimatedTimeRemaining = 0;
+    job.attrs.data.status = 'completed';
+    job.attrs.data.result = {
+      status: 'completed',
+      summary: JSON.stringify(summaryObj)
+    };
+    await job.save();
 
     console.log(`Transcription job completed for videoId: ${videoId}`);
   } catch (error) {

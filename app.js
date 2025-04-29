@@ -19,12 +19,21 @@ const transcriptRoutes = require("./routes/transcript");
 const stripeRoutes = require("./routes/stripeRoutes");
 const stripeWebhook = require("./routes/webhook");
 const summaryRoutes = require("./routes/summary");
+const { Server } = require("socket.io");
+const http = require("http");
+const jwt = require("jsonwebtoken");
+const User = mongoose.model("User");
+const Summary = mongoose.model("Summary");
+const Caption = mongoose.model("Caption");
+const OpenAI = require('openai');
+
+const openai = new OpenAI({
+  apiKey: process.env.GPT_SECRET_KEY
+});
 
 // Variables
 const PORT = process.env.PORT || 4000;
-
 const mongoURi = process.env.MONGODB_URI || "mongodb://localhost:27017/youtella";
-
 const secret = "thisisnotagoodsecret";
 
 const store = MongoDBStore.create({
@@ -50,6 +59,136 @@ const corsOptions = {
   methods: "GET,POST,PUT,DELETE",
   allowedHeaders: "Content-Type,Authorization",
 };
+
+// Create HTTP server and integrate Socket.IO
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: corsOptions,
+});
+
+// Socket.IO middleware to verify JWT
+io.use(async (socket, next) => {
+  console.log("Socket.IO connection attempt");
+  const authHeader = socket.handshake.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return next(new Error("Authentication error: No token"));
+  }
+
+  try {
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    const user = await User.findById(decoded.id).select("-password");
+    if (!user) {
+      return next(new Error("Authentication error: User not found"));
+    }
+
+    socket.userId = user._id;
+    next();
+  } catch (error) {
+    next(new Error("Authentication error: Invalid token"));
+  }
+});
+
+// Socket.IO connection handling
+io.on("connection", (socket) => {
+  socket.on("chat_message", async (data) => {
+    const { message, summaryId } = data;
+
+    try {
+      if (!summaryId) {
+        socket.emit("chat_response", "Please select a summary to chat.");
+        return;
+      }
+
+      // Find summary and verify user ownership
+      const summary = await Summary.findOne({
+        _id: summaryId,
+        userId: socket.userId,
+      });
+      if (!summary) {
+        socket.emit("chat_error", "Invalid summary ID or unauthorized");
+        return;
+      }
+
+      // Find caption for the video
+      const caption = await Caption.findOne({
+        videoUrl: summary.videoUrl,
+      });
+      if (!caption) {
+        socket.emit("chat_error", "No captions found for this video");
+        return;
+      }
+
+      // Save user message
+      summary.chats.push({
+        sender: "user",
+        text: message,
+      });
+
+      // Construct prompt for OpenAI
+      const chatHistory = summary.chats.map((chat) => ({
+        role: chat.sender === "user" ? "user" : "assistant",
+        content: chat.text,
+      }));
+      const prompt = [
+        {
+          role: "system",
+          content: `You are a helpful AI assistant. Answer the user's question based on the video captions and summary provided. Maintain a conversational tone and use the chat history for context. Also add escape sequence "\n" if the length of your message is long for better paragraphing.
+
+**Video Captions**: ${caption.rawCaptions}
+**Summary**: ${summary.summaryText}
+**Key Points**: ${summary.keypoints.join(", ")}`
+        },
+        ...chatHistory,
+        { role: "user", content: message },
+      ];
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: prompt,
+        max_tokens: 14000,
+        temperature: 0.7,
+      });
+      console.log("OpenAI response:", completion.choices[0].message.content);
+      const botResponse = completion.choices[0].message.content;
+
+      // Save bot response
+      summary.chats.push({
+        sender: "bot",
+        text: botResponse,
+      });
+
+      // Save updated summary
+      await summary.save();
+
+      // Send bot response to client
+      socket.emit("chat_response", botResponse);
+    } catch (error) {
+      console.error("Error processing message:", error);
+      socket.emit("chat_error", "Server error");
+    }
+  });
+
+  socket.on("get_summary_chats", async (summaryId) => {
+    try {
+      const summary = await Summary.findOne({
+        _id: summaryId,
+        userId: socket.userId,
+      }).select("chats");
+      if (!summary) {
+        socket.emit("chat_error", "Invalid summary ID or unauthorized");
+        return;
+      }
+      socket.emit("summary_chats", summary.chats);
+    } catch (error) {
+      console.error("Error fetching chats:", error);
+      socket.emit("chat_error", "Server error");
+    }
+  });
+
+  socket.on("disconnect", () => { });
+});
 
 // Using the app
 app.use(cors(corsOptions));
@@ -109,6 +248,6 @@ mongoose
   });
 
 // Listen for the port number
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`App is listening on http://localhost:${PORT}`);
 });
