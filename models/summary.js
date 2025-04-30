@@ -1,4 +1,3 @@
-// models/summary.js
 const mongoose = require('mongoose');
 
 const SummarySchema = new mongoose.Schema({
@@ -53,7 +52,24 @@ const SummarySchema = new mongoose.Schema({
     },
     videoTimestamp: {
         type: String
-    }
+    },
+    chats: [
+        {
+            sender: {
+                type: String,
+                enum: ['user', 'bot'],
+                required: true
+            },
+            text: {
+                type: String,
+                required: true
+            },
+            timestamp: {
+                type: Date,
+                default: Date.now
+            }
+        }
+    ]
 }, { timestamps: true });
 
 SummarySchema.index({ userId: 1, createdAt: -1 });
