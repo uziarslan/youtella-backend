@@ -49,5 +49,25 @@ VALIDATION CHECKLIST BEFORE RESPONDING:
 ✓ Entire response is wrapped in {}
 ✓ There should be no unterminated string
 ✓ No text exists outside the JSON structure`;
+   },
+   chatPrompt: (summary, caption, message) => {
+      const chatHistory = summary.chats.map((chat) => ({
+         role: chat.sender === "user" ? "user" : "assistant",
+         content: chat.text,
+      }));
+      return [
+         {
+            role: "system",
+            content: `You are a helpful AI assistant. Answer the user's question based on the video captions and summary provided. Maintain a conversational tone and use the chat history for context. Use the language in which summary is generated. Add escape sequence "\n" for better paragraphing if the response is long. If caption is not provided use the summary to answer user query.
+
+         ${caption && caption.rawCaptions.length > 0
+                  ? `**Video Captions**: ${caption.rawCaptions.substring(0, 65000)}`
+                  : ""}
+         **Summary**: ${summary.summaryText}
+         **Key Points**: ${summary.keypoints.join(", ")}`
+         },
+         ...chatHistory,
+         { role: "user", content: message },
+      ];
    }
 };

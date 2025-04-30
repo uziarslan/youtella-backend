@@ -26,6 +26,7 @@ const User = mongoose.model("User");
 const Summary = mongoose.model("Summary");
 const Caption = mongoose.model("Caption");
 const OpenAI = require('openai');
+const { chatPrompt } = require("./utils/prompts");
 
 const openai = new OpenAI({
   apiKey: process.env.GPT_SECRET_KEY
@@ -68,7 +69,6 @@ const io = new Server(server, {
 
 // Socket.IO middleware to verify JWT
 io.use(async (socket, next) => {
-  console.log("Socket.IO connection attempt");
   const authHeader = socket.handshake.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return next(new Error("Authentication error: No token"));
@@ -115,10 +115,6 @@ io.on("connection", (socket) => {
       const caption = await Caption.findOne({
         videoUrl: summary.videoUrl,
       });
-      if (!caption) {
-        socket.emit("chat_error", "No captions found for this video");
-        return;
-      }
 
       // Save user message
       summary.chats.push({
@@ -127,22 +123,7 @@ io.on("connection", (socket) => {
       });
 
       // Construct prompt for OpenAI
-      const chatHistory = summary.chats.map((chat) => ({
-        role: chat.sender === "user" ? "user" : "assistant",
-        content: chat.text,
-      }));
-      const prompt = [
-        {
-          role: "system",
-          content: `You are a helpful AI assistant. Answer the user's question based on the video captions and summary provided. Maintain a conversational tone and use the chat history for context. Also add escape sequence "\n" if the length of your message is long for better paragraphing.
-
-**Video Captions**: ${caption.rawCaptions}
-**Summary**: ${summary.summaryText}
-**Key Points**: ${summary.keypoints.join(", ")}`
-        },
-        ...chatHistory,
-        { role: "user", content: message },
-      ];
+      const prompt = chatPrompt(summary, caption, message);
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
@@ -150,7 +131,6 @@ io.on("connection", (socket) => {
         max_tokens: 14000,
         temperature: 0.7,
       });
-      console.log("OpenAI response:", completion.choices[0].message.content);
       const botResponse = completion.choices[0].message.content;
 
       // Save bot response
