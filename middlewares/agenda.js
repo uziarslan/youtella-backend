@@ -4,10 +4,20 @@ const mongoose = require('mongoose');
 const Summary = mongoose.model('Summary');
 const Caption = mongoose.model('Caption');
 const User = mongoose.model("User");
-const { transcriptPrompt } = require('../utils/prompts');
-const { cloudinary } = require("../cloudinary/index");
-const fetch = require('node-fetch');
-const axios = require("axios");
+const { transcriptPrompt, combineSummariesPrompt } = require('../utils/prompts');
+const {
+  formatSecondsToMinutes,
+  convertToMp3,
+  validateAudioUrl,
+  transcribeAudio,
+  generateTitle,
+  deleteFromCloudinary,
+  fetchVideoCaptions,
+  getVideoTitle,
+  generateShareableLinkName,
+  incrementShareableName,
+  getIsoLanguage
+} = require('../utils/helper')
 
 const openai = new OpenAI({
   apiKey: process.env.GPT_SECRET_KEY
@@ -18,19 +28,6 @@ const agenda = new Agenda({
   processEvery: '10 seconds',
   maxConcurrency: 5
 });
-
-const languageMap = {
-  'english': 'en',
-  'spanish': 'es',
-  'french': 'fr',
-  'german': 'de',
-  'italian': 'it',
-  'portuguese': 'pt',
-  'russian': 'ru',
-  'chinese': 'zh',
-  'japanese': 'ja',
-  'korean': 'ko',
-};
 
 const toneMap = {
   'Formal': 'formal',
@@ -47,189 +44,235 @@ const lengthMap = {
   'Long': 'long'
 };
 
-function formatSecondsToMinutes(seconds) {
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  const formattedSeconds = String(remainingSeconds).padStart(2, '0');
-  return `${minutes}:${formattedSeconds}`;
-}
+// Simple token estimation function (approximate: 1 token ≈ 4 characters)
+const estimateTokens = (text) => {
+  return Math.ceil(text.length / 4);
+};
 
-function stripQuotes(str) {
-  return str.replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1');
-}
+// Delay function to wait for a specified time (in milliseconds)
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-function getIsoLanguage(language) {
-  const normalized = language.toLowerCase();
-  return languageMap[normalized] || normalized;
-}
+// Parse x-ratelimit-reset-tokens (e.g., "1m6.92s") to milliseconds
+const parseResetTokens = (resetTokens) => {
+  if (!resetTokens) return 10000; // Default 10s
+  const match = resetTokens.match(/(?:(\d+)m)?(?:(\d+\.?\d*)s)?/);
+  let milliseconds = 0;
+  if (match[1]) milliseconds += parseInt(match[1]) * 60 * 1000; // Minutes
+  if (match[2]) milliseconds += parseFloat(match[2]) * 1000; // Seconds
+  return Math.max(milliseconds, 1000); // Minimum 1s
+};
 
-async function convertToMp3(videoSource) {
-  const urlParts = videoSource.match(/\/Youtella\/videos\/(.+)\.(?:mov|mp4)$/i);
-  if (!urlParts) {
-    throw new Error('Invalid Cloudinary video URL. Expected format: /Youtella/videos/...mov or ...mp4');
-  }
-  const publicId = `Youtella/videos/${urlParts[1].replace(/\.(mov|mp4)$/i, '')}`;
-  const audioUrl = cloudinary.url(`${publicId}`, {
-    resource_type: 'video',
-    format: 'mp3',
-    audio_codec: 'mp3',
-    audio_bitrate: '128k',
-    secure: true,
-  });
-  const response = await fetch(audioUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch MP3 from Cloudinary: ${response.statusText}`);
-  }
-  return { stream: response.body };
-}
+// Process large captions with rate limit handling
+const processLargeCaptions = async (captions, language, length, tone, progressCallback) => {
+  const maxTokensPerPart = 15000; // Smaller parts to stay under TPM limit
+  const maxRetries = 3;
+  const tpmLimit = 30000; // TPM limit for gpt-4-turbo-preview
+  let remainingTokens = tpmLimit; // Track remaining tokens (initial estimate)
 
-async function validateAudioUrl(audioSource) {
-  const urlParts = audioSource.match(/\/Youtella\/(?:videos|audio)\/(.+)\.(?:mp3|wav|m4a)$/i);
-  if (!urlParts) {
-    throw new Error('Invalid Cloudinary audio URL. Expected format: /Youtella/(videos|audio)/...mp3, ...wav, or ...m4a');
-  }
-  const response = await fetch(audioSource);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch audio: ${response.statusText}`);
-  }
-  return { stream: response.body };
-}
+  // Split captions into parts
+  const splitCaptions = (captions, maxTokens) => {
+    const parts = [];
+    const lines = captions.split('\n');
+    let currentPart = '';
+    let currentTokenCount = 0;
 
-async function uploadToCloudinary(stream, publicId) {
-  return new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        resource_type: 'video',
-        public_id: publicId,
-        folder: 'Youtella/audio',
-        format: 'mp3',
-        timeout: 300000,
-        audio_codec: 'mp3',
-        audio_bitrate: '128k'
-      },
-      (error, result) => {
-        if (error) {
-          return reject(new Error(`Cloudinary upload failed: ${error.message}`));
+    for (const line of lines) {
+      const lineTokens = estimateTokens(line);
+      if (currentTokenCount + lineTokens > maxTokens && currentPart.trim()) {
+        parts.push(currentPart);
+        currentPart = '';
+        currentTokenCount = 0;
+      }
+      currentPart += line + '\n';
+      currentTokenCount += lineTokens;
+    }
+
+    if (currentPart.trim()) {
+      parts.push(currentPart);
+    }
+
+    return parts;
+  };
+
+  let captionParts = splitCaptions(captions, maxTokensPerPart);
+  const partialSummaries = [];
+
+  for (let i = 0; i < captionParts.length; i++) {
+    let partCaptions = captionParts[i];
+    const prompt = transcriptPrompt(language, length, tone);
+    let attempt = 0;
+    let success = false;
+    let currentMaxTokens = maxTokensPerPart;
+
+    while (attempt < maxRetries && !success) {
+      try {
+        // Estimate tokens for this request
+        const requestTokens = estimateTokens(prompt) + estimateTokens(partCaptions) + 4096; // Include max_tokens
+
+        // Proactively delay if remaining tokens are low
+        if (remainingTokens < requestTokens * 1.5) {
+          await delay(10000); // Increased to 10s for better TPM reset
+          if (progressCallback) {
+            const progress = 60 + (i / captionParts.length) * 20 + (attempt * 0.5); // Small progress increment
+            await progressCallback(progress);
+          }
+          remainingTokens = tpmLimit; // Assume reset
         }
-        resolve(result.secure_url);
+
+        const summaryResponse = await openai.chat.completions.create({
+          model: 'gpt-4-turbo',
+          messages: [
+            { role: 'system', content: prompt },
+            { role: 'user', content: partCaptions }
+          ],
+          max_tokens: 4096
+        });
+
+        let partialSummary;
+        try {
+          partialSummary = JSON.parse(summaryResponse.choices[0].message.content);
+        } catch (error) {
+          throw new Error(`Failed to parse partial summary for part ${i + 1}: ${error.message}`);
+        }
+
+        partialSummaries.push(partialSummary);
+        success = true;
+
+        // Update remaining tokens (approximate)
+        remainingTokens = Math.max(0, remainingTokens - requestTokens);
+
+        // Update progress (60% to 80% over the parts)
+        if (progressCallback) {
+          const progress = 60 + ((i + 1) / captionParts.length) * 20;
+          await progressCallback(progress);
+        }
+      } catch (error) {
+        if (error.code === 'rate_limit_exceeded' && attempt < maxRetries - 1) {
+          const retryAfterMs = parseResetTokens(error.headers?.['x-ratelimit-reset-tokens']) || parseInt(error.headers?.['retry-after-ms']) || 10000;
+          await delay(retryAfterMs);
+          if (progressCallback) {
+            const progress = 60 + (i / captionParts.length) * 20 + (attempt * 0.5);
+            await progressCallback(progress);
+          }
+          attempt++;
+          remainingTokens = parseInt(error.headers?.['x-ratelimit-remaining-tokens']) || tpmLimit;
+
+          // Check if the error indicates the request is too large
+          if (error.message.includes('Request too large') && currentMaxTokens > 5000) {
+            currentMaxTokens = Math.floor(currentMaxTokens / 2);
+            const newParts = splitCaptions(partCaptions, currentMaxTokens);
+            captionParts.splice(i, 1, ...newParts); // Replace current part with smaller parts
+            partCaptions = captionParts[i]; // Update to the first of the new parts
+          }
+        } else {
+          throw error;
+        }
       }
-    );
-    stream.pipe(uploadStream).on('error', (err) => {
-      reject(err);
-    });
-  });
-}
-
-async function transcribeAudio(audioStream, language) {
-  const audioBuffer = await new Promise((resolve, reject) => {
-    const chunks = [];
-    audioStream.on('data', chunk => chunks.push(chunk));
-    audioStream.on('end', () => resolve(Buffer.concat(chunks)));
-    audioStream.on('error', reject);
-  });
-  const file = new File([audioBuffer], 'audio.mp3', { type: 'audio/mpeg' });
-  const isoLanguage = getIsoLanguage(language);
-  const transcription = await openai.audio.transcriptions.create({
-    file,
-    model: 'whisper-1',
-    language: isoLanguage
-  });
-  return transcription.text || '';
-}
-
-async function generateTitle(captions, language = 'english') {
-  if (!captions || captions.trim() === '') {
-    return 'Untitled Video';
-  }
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4',
-    messages: [
-      {
-        role: 'system',
-        content: `Generate concise video titles based on captions in ${language.toLowerCase()}.`
-      },
-      {
-        role: 'user',
-        content: `Generate a title for a video based on these captions:\n\n${captions.substring(0, 1000)}`
-      }
-    ],
-    max_tokens: 50
-  });
-  return stripQuotes(completion.choices[0].message.content.trim());
-}
-
-async function deleteFromCloudinary(publicId) {
-  const baseId = publicId.replace(/^Youtella\//, '');
-  await Promise.all([
-    cloudinary.uploader.destroy(`Youtella/${baseId}`, { resource_type: 'video' }),
-    cloudinary.uploader.destroy(`Youtella/audio/${baseId}_audio`, { resource_type: 'video' })
-  ]);
-}
-
-async function fetchVideoCaptions(videoId, language = 'en') {
-  const options = {
-    method: 'GET',
-    url: `https://youtube-captions-transcript-subtitles-video-combiner.p.rapidapi.com/download-srt/${videoId}`,
-    params: { language },
-    headers: {
-      'x-rapidapi-key': process.env.RAPIDAPI_KEY,
-      'x-rapidapi-host': process.env.RAPIDAPI_HOST
     }
-  };
-  const response = await axios.request(options);
-  if (response.status !== 200) {
-    throw new Error(`Failed to fetch captions: ${response.statusText}`);
-  }
-  return response.data;
-}
 
-async function getVideoTitle(videoId) {
-  const options = {
-    method: 'GET',
-    url: `https://youtube-captions-transcript-subtitles-video-combiner.p.rapidapi.com/get-video-info/${videoId}`,
-    params: { format: 'json' },
-    headers: {
-      'x-rapidapi-key': process.env.RAPIDAPI_KEY,
-      'x-rapidapi-host': process.env.RAPIDAPI_HOST
+    if (!success) {
+      throw new Error(`Failed to process part ${i + 1} after ${maxRetries} attempts`);
     }
-  };
-  const response = await axios.request(options);
-  if (response.status !== 200) {
-    return 'Untitled Video';
   }
-  return {
-    title: response.data.title,
-    thumbnail: response.data.thumbnail[0].url,
-    lengthSeconds: response.data.lengthSeconds,
-  };
-}
 
-async function generateShareableLinkName(videoTitle, language = "english") {
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4',
-    messages: [
-      {
-        role: 'system',
-        content: `Generate 2 word name for the shareable link based on the provided video title in ${language.toLowerCase()}.`
-      },
-      {
-        role: 'user',
-        content: `Generate a 2 word name for a shareable link based on this title, make sure to add a separator in between those words "-", also make sure the name is unique:\n\n${videoTitle}`
+  // Combine partial summaries
+  const combinedPrompt = combineSummariesPrompt(language, length, tone);
+  const combinedSummariesText = partialSummaries.map((s, i) => `Part ${i + 1}: ${s.summary}`).join('\n\n');
+  const combinedKeypoints = partialSummaries.flatMap(s => s.keypoints);
+  const combinedTimestamps = partialSummaries.flatMap(s => s.timestamps);
+  let combinedInputParts = [JSON.stringify({
+    summaries: combinedSummariesText,
+    keypoints: combinedKeypoints,
+    timestamps: combinedTimestamps
+  })];
+
+  let attempt = 0;
+  let success = false;
+  let currentMaxTokens = 2048; // Lowered initial max_tokens for combination
+  let inputIndex = 0;
+
+  while (attempt < maxRetries && !success && inputIndex < combinedInputParts.length) {
+    const combinedInput = combinedInputParts[inputIndex];
+    let requestTokens; // Declare outside try block
+    try {
+      // Estimate tokens for combination request
+      requestTokens = Math.min(estimateTokens(combinedPrompt) + estimateTokens(combinedInput) + currentMaxTokens, 5000); // Cap at 5,000
+
+      // Proactively delay if remaining tokens are low
+      if (remainingTokens < requestTokens * 1.5) {
+        await delay(10000);
+        if (progressCallback) {
+          const progress = 80 + (attempt * 0.5) + (inputIndex * 0.5); // Small increment for combination
+          await progressCallback(progress);
+        }
+        remainingTokens = tpmLimit;
       }
-    ],
-    max_tokens: 50
-  });
-  return stripQuotes(completion.choices[0].message.content.trim());
-}
 
-async function incrementShareableName(videoId, shareableName) {
-  const captions = await Caption.findOneAndUpdate(
-    { videoId },
-    { $inc: { generated: 1 } },
-    { new: true }
-  );
-  return `${shareableName}-${captions.generated}`;
-}
+      const finalSummaryResponse = await openai.chat.completions.create({
+        model: 'gpt-4-turbo',
+        messages: [
+          { role: 'system', content: combinedPrompt },
+          { role: 'user', content: combinedInput }
+        ],
+        max_tokens: currentMaxTokens
+      });
+
+      let finalSummary;
+      try {
+        finalSummary = JSON.parse(finalSummaryResponse.choices[0].message.content);
+      } catch (error) {
+        throw new Error(`Failed to parse combined summary: ${error.message}`);
+      }
+
+      success = true;
+      remainingTokens = Math.max(0, remainingTokens - requestTokens);
+
+      return {
+        summaryText: finalSummary.summary,
+        keypoints: finalSummary.keypoints,
+        timestamps: finalSummary.timestamps
+      };
+    } catch (error) {
+      if (error.code === 'rate_limit_exceeded' && attempt < maxRetries - 1) {
+        const retryAfterMs = parseResetTokens(error.headers?.['x-ratelimit-reset-tokens']) || parseInt(error.headers?.['retry-after-ms']) || 10000;
+        // Update progress incrementally during long delays
+        const delayStart = Date.now();
+        const delayDuration = retryAfterMs;
+        while (Date.now() - delayStart < delayDuration) {
+          const elapsed = Date.now() - delayStart;
+          const progressIncrement = (elapsed / delayDuration) * 0.1; // 0.1% per second
+          if (progressCallback) {
+            const progress = 80 + (attempt * 0.5) + (inputIndex * 0.5) + progressIncrement;
+            await progressCallback(progress);
+          }
+          await delay(Math.min(1000, delayDuration - elapsed)); // Update every 1s
+        }
+        attempt++;
+        remainingTokens = parseInt(error.headers?.['x-ratelimit-remaining-tokens']) || tpmLimit;
+
+        // Split input or reduce max_tokens
+        if (requestTokens > 3000 && inputIndex === 0 && combinedInputParts.length === 1) {
+          const maxInputTokens = 3000; // Target ~3,000 tokens per part
+          combinedInputParts = splitCaptions(combinedInput, maxInputTokens); // Reuse splitCaptions
+          inputIndex = 0; // Reset to process new parts
+          attempt = 0; // Reset attempts for new parts
+        } else if (currentMaxTokens > 1024) {
+          currentMaxTokens = Math.floor(currentMaxTokens / 2);
+        }
+      } else {
+        if (inputIndex < combinedInputParts.length - 1) {
+          inputIndex++; // Try next input part
+          attempt = 0; // Reset attempts for new part
+          currentMaxTokens = 2048; // Reset max_tokens
+        } else {
+          throw error;
+        }
+      }
+    }
+  }
+
+  throw new Error(`Failed to combine summaries after ${maxRetries} attempts for all input parts`);
+};
 
 agenda.define('transcribeVideo', async (job) => {
   const { videoId, userId, advancedFeatures } = job.attrs.data;
@@ -237,10 +280,11 @@ agenda.define('transcribeVideo', async (job) => {
   try {
     job.attrs.data.status = 'pending';
     job.attrs.data.progress = 0;
-    job.attrs.data.estimatedTimeRemaining = 120;
+    job.attrs.data.estimatedTimeRemaining = 180; // Increased initial estimate
     await job.save();
 
     job.attrs.data.progress = 10;
+    job.attrs.data.estimatedTimeRemaining = 150; // Adjusted for smoother transition
     await job.save();
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
@@ -255,7 +299,7 @@ agenda.define('transcribeVideo', async (job) => {
       shareableName = await incrementShareableName(videoId, existingCaption.shareableName);
     } else {
       job.attrs.data.progress = 20;
-      job.attrs.data.estimatedTimeRemaining = 100;
+      job.attrs.data.estimatedTimeRemaining = 120;
       await job.save();
 
       captions = await fetchVideoCaptions(videoId, getIsoLanguage(language));
@@ -276,38 +320,59 @@ agenda.define('transcribeVideo', async (job) => {
       await newCaption.save();
     }
 
-    job.attrs.data.progress = 80;
-    job.attrs.data.estimatedTimeRemaining = 40;
+    job.attrs.data.progress = 40; // Earlier update for smoother progress
+    job.attrs.data.estimatedTimeRemaining = 90;
     await job.save();
 
     const summaryTitle = videoTitle || await getVideoTitle(videoId);
 
-    job.attrs.data.progress = 90;
-    job.attrs.data.estimatedTimeRemaining = 20;
-    await job.save();
-
-    const prompt = transcriptPrompt(language, length, tone);
-    const summary = await openai.chat.completions.create({
-      model: 'gpt-4-turbo',
-      messages: [
-        { role: 'system', content: prompt },
-        { role: 'user', content: captions.substring(0, 65000) }
-      ],
-      max_tokens: 4096
-    });
-
     let summaryText, keypoints, timestamps;
-    try {
-      const parsedSummary = JSON.parse(summary.choices[0].message.content);
-      summaryText = parsedSummary.summary || summary.choices[0].message.content.trim();
-      keypoints = parsedSummary.keypoints || [];
-      timestamps = parsedSummary.timestamps || [];
-    } catch (error) {
-      if (userId !== null) {
-        await User.findByIdAndUpdate(userId, { $inc: { summariesUsedToday: -1 } });
+    const tokenCount = estimateTokens(captions);
+    const tokenThreshold = 25000; // Safe limit to avoid 30,000 TPM cap
+
+    if (tokenCount > tokenThreshold) {
+      // Process large captions by splitting and combining
+      const progressCallback = async (progress) => {
+        job.attrs.data.progress = progress;
+        job.attrs.data.estimatedTimeRemaining = Math.max(30, 90 - (progress - 60) * 1.5); // More dynamic
+        await job.save();
+      };
+      const result = await processLargeCaptions(captions, language, length, tone, progressCallback);
+      summaryText = result.summaryText;
+      keypoints = result.keypoints;
+      timestamps = result.timestamps;
+    } else {
+      // Process normally for smaller captions
+      job.attrs.data.progress = 60;
+      job.attrs.data.estimatedTimeRemaining = 60;
+      await job.save();
+
+      const prompt = transcriptPrompt(language, length, tone);
+      const summary = await openai.chat.completions.create({
+        model: 'gpt-4-turbo',
+        messages: [
+          { role: 'system', content: prompt },
+          { role: 'user', content: captions }
+        ],
+        max_tokens: 4096
+      });
+
+      try {
+        const parsedSummary = JSON.parse(summary.choices[0].message.content);
+        summaryText = parsedSummary.summary || summary.choices[0].message.content.trim();
+        keypoints = parsedSummary.keypoints || [];
+        timestamps = parsedSummary.timestamps || [];
+      } catch (error) {
+        if (userId !== null) {
+          await User.findByIdAndUpdate(userId, { $inc: { summariesUsedToday: -1 } });
+        }
+        throw error;
       }
-      throw error;
     }
+
+    job.attrs.data.progress = 90;
+    job.attrs.data.estimatedTimeRemaining = 30;
+    await job.save();
 
     const shareableLink = `${process.env.DOMAIN_FRONTEND}/share/${shareableName}`;
 
@@ -356,6 +421,7 @@ agenda.define('transcribeVideo', async (job) => {
     }
     job.attrs.data.status = 'failed';
     job.attrs.data.error = error.message;
+    job.attrs.data.result = { status: 'failed', error: error.message };
     await job.save();
     throw error;
   }
