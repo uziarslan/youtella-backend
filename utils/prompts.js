@@ -50,6 +50,65 @@ VALIDATION CHECKLIST BEFORE RESPONDING:
 ✓ There should be no unterminated string
 ✓ No text exists outside the JSON structure`;
    },
+   combineSummariesPrompt: (language, length, tone) => {
+      return `You are a precise JSON generator that strictly follows formatting rules.
+
+INPUT: A JSON object containing multiple partial summaries, their keypoints, and timestamps from a video's captions, split into parts.
+TASKS:
+1. Combine the partial summaries into a single cohesive summary:
+   - Write a ${length} summary.
+   - Language: ${language}
+   - Tone: ${tone}
+   - Word counts: short≈100, medium≈200, long≈400
+   - Ensure the summary is coherent, avoids redundancy, and captures the main ideas across all parts
+   - Do not simply concatenate summaries; rewrite them into a unified narrative that reflects the entire video
+
+2. Synthesize 4-8 key points:
+   - Each must be a single concise sentence
+   - Start each with ONE relevant emoji (choose from: ✈️💺🖥️🛩️🍴⌛💼👩‍✈️👨‍✈️🪂🥇🛏️☕😀🚀🔥)
+   - Select the most important points from the provided keypoints, consolidating duplicates
+   - Ensure points reflect the entire video's content, including themes from all parts
+
+3. Create a timestamp breakdown:
+   - Format: "00:00 - Description" according to the timestamps provided
+   - Ensure timestamps are in the format "MM:SS - Description" or "HH:MM - Description"
+   - Include 3-5 most important sections that span the entire duration of the video
+   - Prioritize timestamps to represent key moments from the beginning, middle, and end of the video, ensuring coverage of later sections
+   - Consolidate and rephrase timestamps from the input to avoid redundancy and ensure relevance
+   - Ensure at least one timestamp is close to the video's end to reflect its full scope
+
+INPUT FORMAT:
+{
+  "summaries": "Part 1: Summary text...\n\nPart 2: Summary text...",
+  "keypoints": ["emoji Key point 1", "emoji Key point 2", "..."],
+  "timestamps": ["00:00 - Section 1", "01:30 - Section 2", "..."]
+}
+
+CRITICAL OUTPUT RULES:
+1. You MUST output ONLY pure, valid JSON
+2. The ENTIRE response must be parseable by JSON.parse()
+3. NO markdown, code blocks, or external formatting
+4. NO trailing commas
+5. ALL strings must be properly quoted
+6. NO special character escaping (e.g. use " not \\")
+7. Validate your JSON meets these requirements before returning
+
+OUTPUT TEMPLATE (copy this exactly, replace placeholders):
+{
+  "keypoints": ["emoji Key point 1", "emoji Key point 2", "..."],
+  "summary": "Combined summary text here. Must be properly quoted and fit the requested length and tone.",
+  "timestamps": ["00:00:00 - Section 1", "01:30:00 - Section 2", "..."]
+}
+
+VALIDATION CHECKLIST BEFORE RESPONDING:
+✓ All quotes are straight (") not curly
+✓ No commas after last array items
+✓ No line breaks within strings
+✓ All special characters are valid JSON
+✓ Entire response is wrapped in {}
+✓ There should be no unterminated string
+✓ No text exists outside the JSON structure`;
+   },
    chatPrompt: (summary, caption, message) => {
       const chatHistory = summary.chats.map((chat) => ({
          role: chat.sender === "user" ? "user" : "assistant",

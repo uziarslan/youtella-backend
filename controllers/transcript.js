@@ -249,7 +249,7 @@ const getTranscriptStatus = async (req, res) => {
             progress: taskData.progress || 0,
             estimatedTimeRemaining: taskData.estimatedTimeRemaining || 0,
             summary: summaryData,
-            error: taskData.result?.error
+            error: taskData.error
         });
     } catch (err) {
         console.error('Error fetching task status:', err);
