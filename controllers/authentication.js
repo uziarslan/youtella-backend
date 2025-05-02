@@ -16,7 +16,7 @@ const generateToken = (id) => {
 const registerUser = async (req, res) => {
     const { username, password, captcha } = req.body;
 
-    const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY || "6LdwQywrAAAAAASyiM2WLnmUGuQ14wda47O0-muC";
+    const RECAPTCHA_SECRET_KEY = "6LdwQywrAAAAAASyiM2WLnmUGuQ14wda47O0-muC";
 
     // 1. Check for captcha
     if (!captcha) {
