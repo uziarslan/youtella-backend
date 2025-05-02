@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const User = mongoose.model("User");
 const jwt = require("jsonwebtoken");
 const agenda = require("../middlewares/agenda")
+const axios = require("axios");
 
 
 const jwt_secret = process.env.JWT_SECRET;
@@ -13,29 +14,48 @@ const generateToken = (id) => {
 };
 
 const registerUser = async (req, res) => {
-    const { username, password } = req.body;
+    const { username, password, captcha } = req.body;
 
-    const foundUser = await User.findOne({ username });
+    const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY || "6LdwQywrAAAAAASyiM2WLnmUGuQ14wda47O0-muC";
 
-    if (foundUser)
-        return res
-            .status(500)
-            .json({ error: "Email already in use. Try differnt one." });
+    // 1. Check for captcha
+    if (!captcha) {
+        return res.status(400).json({ error: "Captcha is required." });
+    }
 
-    if (!username) return res.status(500).json({ error: "Email is required." });
+    try {
+        // 2. Verify captcha with Google
+        const verifyURL = `https://www.google.com/recaptcha/api/siteverify?secret=${RECAPTCHA_SECRET_KEY}&response=${captcha}`;
 
-    if (!password)
-        return res.status(500).json({ error: "Password is required." });
+        const { data } = await axios.post(verifyURL);
 
-    const user = await User.create({
-        ...req.body,
-    });
+        if (!data.success) {
+            return res.status(400).json({ error: "Captcha verification failed." });
+        }
 
-    res.status(201).json({
-        token: generateToken(user._id),
-        success: "Email has been registered",
-        user: user
-    });
+        // 3. Basic validation
+        if (!username) return res.status(400).json({ error: "Email is required." });
+        if (!password) return res.status(400).json({ error: "Password is required." });
+
+        const foundUser = await User.findOne({ username });
+        if (foundUser) {
+            return res.status(400).json({ error: "Email already in use. Try a different one." });
+        }
+
+        // 4. Create user
+        const user = await User.create({ ...req.body });
+
+        // 5. Send response
+        res.status(201).json({
+            token: generateToken(user._id),
+            success: "Email has been registered",
+            user,
+        });
+
+    } catch (error) {
+        console.error("Captcha or user registration failed:", error.message);
+        res.status(500).json({ error: "Internal server error. Please try again later." });
+    }
 };
 
 const userLogin = async (req, res) => {
