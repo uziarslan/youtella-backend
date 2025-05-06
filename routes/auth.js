@@ -5,7 +5,10 @@ const {
     registerUser,
     userLogin,
     getUser,
-    updateUser
+    updateUser,
+    forgotPassword,
+    verifyOTP,
+    resetPassword
 } = require("../controllers/authentication");
 
 const multer = require("multer");
@@ -19,6 +22,15 @@ router.post("/user/signup", wrapAsync(registerUser));
 
 // Logging in a user
 router.post("/user/login", wrapAsync(userLogin));
+
+// Forgot Password request
+router.post("/user/forgot-password", wrapAsync(forgotPassword));
+
+// Verifying OTP
+router.post("/user/verify-otp", wrapAsync(verifyOTP));
+
+// Resetting Password
+router.post("/user/reset-password", wrapAsync(resetPassword));
 
 // Getting a user
 router.get("/user", protect, wrapAsync(getUser));

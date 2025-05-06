@@ -44,7 +44,13 @@ const UserSchema = new mongoose.Schema({
     },
     subscriptionEndsAt: {
         type: Date
-    }
+    },
+    resetPasswordOTP: {
+        type: String
+    },
+    resetPasswordExpires: {
+        type: Date
+    },
 }, { timestamps: true });
 
 UserSchema.pre("save", async function (next) {
