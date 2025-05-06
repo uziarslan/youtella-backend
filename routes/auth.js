@@ -12,8 +12,8 @@ const {
 } = require("../controllers/authentication");
 
 const multer = require("multer");
-const { storage } = require("../cloudinary");
-const upload = multer({ storage });
+const { imageStorage } = require("../cloudinary/index");
+const upload = multer({ storage: imageStorage });
 
 const router = express()
 
