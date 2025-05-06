@@ -4,6 +4,8 @@ const jwt = require("jsonwebtoken");
 const agenda = require("../middlewares/agenda");
 const axios = require("axios");
 const { MailtrapClient } = require("mailtrap");
+const { cloudinary } = require("../cloudinary");
+
 
 const TOKEN = process.env.MAILTRAP_TOKEN;
 const jwt_secret = process.env.JWT_SECRET;
@@ -129,7 +131,7 @@ const updateUser = async (req, res) => {
         try {
             const filename = user.profileImage?.filename;
             if (filename) {
-                await agenda.now("deleteFileFromCloudinary", { filename });
+                await cloudinary.uploader.destroy(filename);
             }
 
             user.profileImage = {
