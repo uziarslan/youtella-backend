@@ -405,6 +405,7 @@ agenda.define('transcribeVideo', async (job) => {
       videoTimestamp,
       summaryTitle,
       _id: newSummary._id,
+      userId
     };
 
     job.attrs.data.progress = 100;

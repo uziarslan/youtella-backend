@@ -149,7 +149,7 @@ async function getVideoTitle(videoId) {
     }
     return {
         title: response.data.title,
-        thumbnail: response.data.thumbnail[0].url,
+        thumbnail: response.data.embed.iframeUrl,
         lengthSeconds: response.data.lengthSeconds,
     };
 }

@@ -3,6 +3,19 @@ const agenda = require('../middlewares/agenda');
 const mongoose = require('mongoose');
 const User = mongoose.model('User');
 const Summary = mongoose.model('Summary');
+const { MailtrapClient } = require("mailtrap");
+
+
+const TOKEN = process.env.MAILTRAP_TOKEN;
+
+const client = new MailtrapClient({
+    token: TOKEN,
+});
+
+const sender = {
+    email: "support@youtella.ai",
+    name: "Youtella",
+};
 
 // Extract video ID from URL
 const getVideoId = (url) => {
@@ -33,7 +46,7 @@ const getVideoTranscript = async (req, res) => {
             await user.save();
         } else if (user.summariesUsedToday >= 3) {
             return res.status(403).json({
-                error: "You’ve used all 3 free summaries for today. You can either: ✅ Wait 24 hours 🚀 Unlock unlimited access for $5.99/month"
+                error: `🎉 You’ve hit your daily limit!<br/>You’ve summarized 3 videos today — great work!<br/><br/>Don’t want to wait 24 hours?<br/>🚀 Upgrade to Youtella Premium for just $5.99/month<br/>💡 Cancel anytime — no commitments.<br/><br/><button class="go-premium"><a style="text-decoration: none; color: #fff;" href="${process.env.DOMAIN_FRONTEND}/pricing">Unlock Unlimited Summaries</a></button>`
             });
         }
     }
@@ -241,6 +254,24 @@ const getTranscriptStatus = async (req, res) => {
             } catch (parseError) {
                 console.error('Failed to parse summary JSON:', parseError);
                 summaryData = { keypoints: [], summary: taskData.result.summary, timestamps: [] };
+            }
+        }
+
+        if (taskData.result?.summary) {
+            const user = await User.findById(summaryData.userId);
+            if (user && user.subscriptionStatus === "free") {
+                await client
+                    .send({
+                        from: sender,
+                        to: [{ email: user.username }],
+                        template_uuid: "7326d5a1-f276-428f-a3a9-970f011888c2",
+                        template_variables: {
+                            "keypoints": summaryData.keypoints,
+                            "summaryText": summaryData.summaryText,
+                            "subject": summaryData.summaryTitle
+                        },
+                    })
+                    .then(console.log, console.error);
             }
         }
 
