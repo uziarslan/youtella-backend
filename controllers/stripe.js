@@ -76,14 +76,8 @@ const handleCheckoutSuccess = async (req, res) => {
         const user = await User.findById(userId);
         if (!user) throw new Error('User not found');
 
-        // Check if already processed
-        if (user.processedSessions?.includes(sessionId)) {
-            return res.status(200).json({ message: 'Session already processed', userId });
-        }
-
         // Process subscription logic
         user.subscriptionStatus = 'active';
-        user.processedSessions = [...(user.processedSessions || []), sessionId];
         await user.save();
 
         return res.status(200).json({ message: 'Payment successful', userId });
