@@ -6,7 +6,6 @@ const {
     handleCheckoutSuccess,
     getPaymentMethod,
     cancelSubscription,
-    handleWebhook,
     updatePaymentMethod
 } = require('../controllers/stripe');
 
@@ -26,16 +25,5 @@ router.post('/cancel-subscription', protect, wrapAsync(cancelSubscription));
 
 // Update Card info
 router.post("/update-payment-method", protect, wrapAsync(updatePaymentMethod));
-
-// Stripe webhook
-router.post(
-    '/webhook',
-    express.raw({ type: 'application/json' }),
-    (req, res, next) => {
-        req.rawBody = req.body;
-        next();
-    },
-    wrapAsync(handleWebhook)
-);
 
 module.exports = router;
