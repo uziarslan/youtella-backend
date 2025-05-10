@@ -65,30 +65,31 @@ const createCheckout = async (req, res) => {
 
 // Handle successful checkout (optional, as webhooks handle most updates)
 const handleCheckoutSuccess = async (req, res) => {
-    const sessionId = req.body.sessionId; // Read from body instead of query
-
-    if (!sessionId) {
-        return res.status(400).json({ error: 'Session ID is required' });
-    }
+    const { sessionId } = req.body;
+    if (!sessionId) return res.status(400).json({ error: 'Session ID is required' });
 
     try {
         const session = await stripe.checkout.sessions.retrieve(sessionId);
-        // Retrieve the userId from the session metadata
         const userId = session.metadata?.userId;
-        if (!userId) {
-            throw new Error('User ID not found in session metadata');
-        }
+        if (!userId) throw new Error('User ID not found in session metadata');
 
-        // Optionally, update user status or subscription here
         const user = await User.findById(userId);
-        if (user) {
-            user.subscriptionStatus = 'active'; // Update based on your logic
-            await user.save();
+        if (!user) throw new Error('User not found');
+
+        // Check if already processed
+        if (user.processedSessions?.includes(sessionId)) {
+            return res.status(200).json({ message: 'Session already processed', userId });
         }
 
-        res.status(200).json({ message: 'Payment successful', userId });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to process checkout success' });
+        // Process subscription logic
+        user.subscriptionStatus = 'active';
+        user.processedSessions = [...(user.processedSessions || []), sessionId];
+        await user.save();
+
+        return res.status(200).json({ message: 'Payment successful', userId });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Failed to process checkout success' });
     }
 };
 
